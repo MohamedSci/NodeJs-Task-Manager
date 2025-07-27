@@ -1,39 +1,50 @@
-// server.js
-// Main entry point for the Node.js Task Manager Backend.
-// Sets up Express, loads environment variables, applies middleware,
-// registers routes, and handles global errors.
+// src/auth/authMiddleware.js
+// Middleware for authenticating requests using JSON Web Tokens (JWT).
 
-require('dotenv').config(); // Load environment variables from .env file
-const express = require('express');
-const cors = require('cors');
-const authRoutes = require('./src/routes/authRoutes');
-const taskRoutes = require('./src/routes/taskRoutes');
-const errorHandler = require('./src/utils/errorHandler');
+const jwt = require('jsonwebtoken');
+const AppError = require('../utils/AppError');
+const userModel = require('../models/userModel'); // Used to find user by ID from token
 
-const app = express();
-const PORT = process.env.PORT || 3001; // Use port from .env or default to 3001
+// Protects routes by verifying the JWT in the Authorization header.
+const protect = (req, res, next) => {
+    let token;
 
-// --- Middleware ---
+    // Check if the Authorization header exists and starts with 'Bearer'
+    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+        token = req.headers.authorization.split(' ')[1]; // Extract the token
+    }
 
-// Enable CORS for all origins (for development).
-// In production, you'd restrict this to your frontend's domain.
-app.use(cors());
+    // If no token is provided, return an authentication error
+    if (!token) {
+        return next(new AppError('You are not logged in! Please log in to get access.', 401));
+    }
 
-// Parse JSON request bodies
-app.use(express.json());
+    try {
+        // Verify the token using the secret key from environment variables
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-// --- Routes ---
-// Register authentication routes
-app.use('/api/auth', authRoutes);
-// Register task routes (prefixed with /api/tasks)
-app.use('/api/tasks', taskRoutes);
+        // Find the user associated with the token's ID
+        const currentUser = userModel.findById(decoded.id);
 
-// --- Global Error Handling Middleware ---
-// This middleware catches any errors thrown by route handlers or other middleware.
-app.use(errorHandler);
+        // If user not found, return an error
+        if (!currentUser) {
+            return next(new AppError('The user belonging to this token no longer exists.', 401));
+        }
 
-// --- Server Start ---
-app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-    console.log(`Access backend at http://localhost:${PORT}`);
-});
+        // Attach the user object to the request for subsequent middleware/route handlers
+        req.user = currentUser;
+        next(); // Proceed to the next middleware/route handler
+    } catch (err) {
+        // Handle various JWT errors (e.g., invalid token, expired token)
+        if (err.name === 'JsonWebTokenError') {
+            return next(new AppError('Invalid token. Please log in again!', 401));
+        }
+        if (err.name === 'TokenExpiredError') {
+            return next(new AppError('Your token has expired! Please log in again.', 401));
+        }
+        // Catch any other unexpected errors during token verification
+        next(new AppError('Authentication failed.', 500));
+    }
+};
+
+module.exports = protect;
